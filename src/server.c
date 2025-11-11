@@ -1,5 +1,5 @@
 /*
-** server.c -- first implemetation for server, mostly strolen from beji
+** server.c -- first implemetation for server, mostly stolen from beji
 ** Jakob Hermanowski
 */
 
@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 
+#include "build_return.h"
 #define PORT "2222"
 
 #define BACKLOG 100
@@ -31,8 +32,12 @@ void *get_in_addr(struct sockaddr *sa)
 void sigchld_handler(int s){
 	(void)s;
 	int saved_errno = errno;
-
-	while(waitpid(-1, NULL, WNOHANG) > 0);
+	pid_t pid;
+	while(pid = waitpid(-1, NULL, WNOHANG) > 0) {
+		char buf[64];
+		int len = snprintf(buf, sizeof(buf), "Reaped child process %d\n", pid);
+    	write(STDOUT_FILENO, buf, len);
+	}
 
 	errno = saved_errno;
 }
@@ -40,20 +45,26 @@ void sigchld_handler(int s){
 int main(void)
 {
 	int sockfd, new_fd;		//socket file descriptor
-	struct addrinfo hints, *servinfo, *p;
+	struct addrinfo hints;
+	struct addrinfo *servinfo; //pointer to the results
+	struct addrinfo *p;
+
 	struct sockaddr_storage in_addr;
 	socklen_t sin_size;
 	struct sigaction sa;	
 	int yes=1;	//for the socket already in use error
 	char s[INET6_ADDRSTRLEN];
-	int rv; 	//return value
+	char ipstr[INET6_ADDRSTRLEN];
+	int status; 	//return value
 
 	memset(&hints, 0, sizeof hints);	//set memory to 0ros
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE;		//use my IP
-	if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+	hints.ai_family = AF_UNSPEC;		//we accept ipv4 and 6	
+	hints.ai_socktype = SOCK_STREAM;	//tcp socket stream
+	hints.ai_flags = AI_PASSIVE;		//fill my ip for me
+										
+	//servinfo now points to a linked list typ addrinfo
+	if ((status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) { 
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
 		return 1;
 	}
 
@@ -74,9 +85,9 @@ int main(void)
 			close(sockfd);
 			perror("server: bind");
 			continue;
+		} else {
+			break;
 		}
-
-		break;
 	}
 
 	freeaddrinfo(servinfo); // we dont need that struct anymore
@@ -90,8 +101,9 @@ int main(void)
 		perror("listen");
 		exit(1);
 	}
-	
-	sa.sa_handler = sigchld_handler; // real all dead processes
+	//Immer wenn ich ein SIGCHLD bekomme, ruf bitte meine Funktion
+	//we might create dead processes with this we remove them	
+	sa.sa_handler = sigchld_handler; // reap all dead processes
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART;
 	if (sigaction(SIGCHLD, &sa, NULL) == -1) {
@@ -102,7 +114,7 @@ int main(void)
 	printf("server: waiting for connections...\n");
 
 	while(1) {		// accept loop
-	printf("%d\n", search(test1_s, search_s));
+	//printf("%d\n", search(test1_s, search_s));
 		sin_size = sizeof in_addr;
 		new_fd = accept(sockfd, (struct sockaddr *)&in_addr, &sin_size); //blocking till we get input
 		if (new_fd == -1) {
@@ -112,12 +124,21 @@ int main(void)
 		}
 		
 		inet_ntop(in_addr.ss_family, get_in_addr((struct sockaddr *)&in_addr), s, sizeof s);
-		printf("server: got connection from %s\n", s);
+		printf("server: got connection from %s\n", ipstr);
 		char content_len[38] = "Content-Type: text/html; charset=utf-8";	
 		if (!fork()) { // here we fork the code, so we have one thread or smth running the parent and one the child. we check that with the ! if we are the parent we get the child id, so we dont enter, when we are the child we get a 0
+					   
 			close(sockfd); // we dont need that in the child
-			if (send(new_fd, "HTTP/1.1 200 MEOW\nContent-Type: text/html; charset=utf-8\r\n\r\nüwü" , 65, 0) == -1)
-				perror("send");
+
+			uint16_t return_len;
+			uint8_t *response;	
+			build_return(&response, &return_len);
+		    fprintf(stderr,"Antwort (%d Zeichen):\n%s\n", return_len, response);
+			if (send(new_fd, response, return_len,0) == -1)
+				perror("send");				
+			free(response);
+		//	if (send(new_fd, "HTTP/1.1 200 MEOW\nContent-Type: text/html; charset=utf-8\r\n\r\nüwü" , 65, 0) == -1)
+		//		perror("send");
 			close(new_fd);
 			exit(0);
 		}
@@ -125,13 +146,4 @@ int main(void)
 	}
 	return 0;
 }
-
-
-
-
-
-
-
-
-
 
